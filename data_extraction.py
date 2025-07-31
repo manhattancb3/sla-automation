@@ -42,15 +42,17 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
-import time
 
+# ______________ RUNTIME TRACKING - START _________________________ #
 # Used to measure and output program runtime
+import time
 start_time = time.time()
-
+# _________________________________________________________________ #
 
 # Specifies location of tesseract executable if not set in PATH
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
+# Removes horizontal and vertical lines to improve OCR
 def remove_form_lines(image, debug=False):
     # import cv2
     # import numpy as np
@@ -94,6 +96,7 @@ def remove_form_lines(image, debug=False):
 
     return image
 
+# Removes skew from image to improve OCR
 def deskew_image_hough(cleaned, canny_thresh1=50, canny_thresh2=150, hough_threshold=200, min_angle=1.0):
     """
     Deskews an image using Hough Line Transform to detect dominant angles.
@@ -140,6 +143,7 @@ def deskew_image_hough(cleaned, canny_thresh1=50, canny_thresh2=150, hough_thres
 
     return deskewed, median_angle
 
+# Performs multiple preprocessing steps to facilitate OCR
 def preprocess_for_ocr(jpeg_image):
     '''
     Applies various preprocessing strategies for improving OCR success. For this application,
@@ -170,11 +174,11 @@ def preprocess_for_ocr(jpeg_image):
     open_cv_image = np.array(sharpened)
     # cleaned = open_cv_image
 
-    deskewed_image, detected_angle = deskew_image_hough(open_cv_image)
-    print(f"Detected skew angle: {detected_angle} degrees")
+    # deskewed_image, detected_angle = deskew_image_hough(open_cv_image)
+    # print(f"Detected skew angle: {detected_angle} degrees")
 
     # 6 Remove horizontal and vertical boxes/lines
-    cleaned = remove_form_lines(deskewed_image, debug=False)
+    cleaned = remove_form_lines(open_cv_image, debug=False)
 
     # # Invert for easier contour detection
     # invert = cv2.bitwise_not(cleaned)
@@ -225,12 +229,12 @@ def preprocess_for_ocr(jpeg_image):
 
     # 9 Denoise
     # denoised = cv2.medianBlur(deskewed, 3) # faster processing option
-    denoised = cv2.fastNlMeansDenoising(deskewed_image, h=10, templateWindowSize=7, searchWindowSize=21)
-
+    denoised = cv2.fastNlMeansDenoising(cleaned, h=10, templateWindowSize=7, searchWindowSize=21)
 
     # Convert back to PIL
     return Image.fromarray(denoised)
 
+# Extracts needed information from .txt files generated from OCR
 def extract_info(text, path):
     '''
     Extracts specific information from the OCR text outputs. The OCR converts the PDFs
@@ -319,6 +323,7 @@ def extract_info(text, path):
 
     return info
 
+# Searches for and provides specific resolution text from Minutes document
 def find_reso(document, name, end_name):
     '''
     Searches Vote Sheet .docx file for resolution text for each SLA applicant.
@@ -405,10 +410,9 @@ def find_reso(document, name, end_name):
             
 
 
-
+# ______________ FOLDERS & PATHS ___________________________________________ #
 parent_folder = r'C:\Users\MN03\Documents\Python Scripts\SLA Automation\Test Space'
 sla_applications_folder = r'C:\Users\MN03\Documents\Python Scripts\SLA Automation\Test Space\SLA Application PDFs'
-
 
 pdf_path = r'C:\Users\MN03\Documents\Python Scripts\SLA Automation\Test Space\Test-Application.pdf'
 output_folder = r'C:\Users\MN03\Documents\Python Scripts\SLA Automation\Test Space\Text Outputs'
@@ -416,23 +420,27 @@ output_folder = r'C:\Users\MN03\Documents\Python Scripts\SLA Automation\Test Spa
 # Create the output folder if it doesn't exist
 # os.makedirs(output_folder, exist_ok=True)
 
-# Path to Vote Sheet with resolutions
+
+# Images converted from PDFs (not required to save, but helpful for testing)
+image_folder = r"C:\Users\MN03\Documents\Python Scripts\SLA Automation\Test Space\converted_images"
+
+# Path to Vote Sheet / Minutes document with resolution texts
 vote_sheet_path = r'C:\Users\MN03\Documents\Python Scripts\SLA Automation\Test Space\COPY_2025-05-Vote-Sheet.docx'
 #vote_sheet_path = r'C:\Users\MN03\Documents\Python Scripts\SLA Automation\Test Space\test-vote-sheet.docx'
-doc = Document(vote_sheet_path)
 
-# Setup dataframe
-headers = ['applicant_name', 'street_address', 'representative_name(s)', 'representative_email(s)', 'resolution_text']
-df = pd.DataFrame(columns=headers)
+# __________________________________________________________________ #
 
 
-# Converted images
-image_folder = r"C:\Users\MN03\Documents\Python Scripts\SLA Automation\Test Space\converted_images"
+
 
 
 '''
 Perform OCR on each PDF, extract data from text, and store in dataframe
 '''
+# Setup dataframe
+headers = ['applicant_name', 'street_address', 'representative_name(s)', 'representative_email(s)', 'resolution_text']
+df = pd.DataFrame(columns=headers)
+
 for filename in os.listdir(sla_applications_folder):
     if filename.lower().endswith('.pdf'):
         pdf_path = os.path.join(sla_applications_folder, filename)
@@ -492,18 +500,36 @@ for filename in os.listdir(sla_applications_folder):
 
 
 
+# Loads Microsoft Word .docx file
+doc = Document(vote_sheet_path)
+
+# Get list of applicant names to search for resolutions
 name_list = df['applicant_name'].tolist()
-# name_list = ['Sugar Mouse LLC', 'Jones Street Wine Bar LLC', 'Crybaby Hospitality LLC']
+
+# Temporary dictionary to store resolution texts
 reso_dict = {}
 
+'''
+For each applicant name, search .docx for specific resolution text.
+Uses next_name to create end condition.
+'''
 for i in range(len(name_list)):
     search_name = name_list[i]
 
+    # If there is another name, then use it
     if i + 1 < len(name_list):
         next_name = name_list[i + 1]
     else:
         next_name = None
+    
+    # Save resolution text to dataframe
     reso_dict[search_name] = find_reso(doc, search_name, next_name)
+
+
+
+
+
+
 
 print("dict length = ", len(reso_dict))
 print(name_list)
@@ -512,13 +538,27 @@ print(name_list)
 #     print("\n")
 
 
+
+
+
+# Map temporary resolution dictionary to main dictionary using applicant name as key
 df['resolution_text'] = df['applicant_name'].map(reso_dict)
 
 # Create CSV from dataframe
-
 df.to_csv(os.path.join(parent_folder, "SLA_app_info.csv"), mode='w', index=True, header=True)
 
-# Program runtime notification
+
+
+
+
+
+
+
+
+
+
+# ______________ RUNTIME TRACKING - END _________________________ #
+# Calculate program runtime
 end_time = time.time()
 elapsed_time = end_time - start_time
 
@@ -528,11 +568,13 @@ minutes = int((elapsed_time % 3600) // 60)
 seconds = elapsed_time % 60
 
 # Build a readable string
-parts = []
+time_parts = []
 if hours:
-    parts.append(f"{hours}h")
+    time_parts.append(f"{hours}h")
 if minutes:
-    parts.append(f"{minutes}m")
-parts.append(f"{seconds:.2f}s")
+    time_parts.append(f"{minutes}m")
+time_parts.append(f"{seconds:.2f}s")
 
-print("Execution time:", ' '.join(parts))
+print("_____________________________")
+print("| Execution time:", ' '.join(time_parts) + " |")
+# _________________________________________________________________ #
