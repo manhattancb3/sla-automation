@@ -53,11 +53,7 @@ start_time = time.time()
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 # Removes horizontal and vertical lines to improve OCR
-def remove_form_lines(image, debug=False):
-    # import cv2
-    # import numpy as np
-    # import matplotlib.pyplot as plt
-
+def old_remove_form_lines(image, debug=False):
 
     # Invert image to make lines white
     invert = cv2.bitwise_not(image)
@@ -95,6 +91,64 @@ def remove_form_lines(image, debug=False):
         plt.show()
 
     return image
+
+def remove_form_lines(image, debug=False):
+    # Convert to grayscale if needed
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+
+    # Threshold + invert to make lines white
+    thresh = cv2.threshold(cv2.bitwise_not(gray), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+
+    img_height, img_width = thresh.shape
+    line_removed = gray.copy()
+
+    # _______ Horizontal line removal _______
+    h_kernel_len = max(20, img_width // 40)
+    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (h_kernel_len, 1))
+    detect_horizontal = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, horizontal_kernel, iterations=1)
+    detect_horizontal = cv2.dilate(detect_horizontal, horizontal_kernel, iterations=2)
+    line_removed[detect_horizontal == 255] = 255
+
+    if debug:
+        plt.title("Horizontal lines")
+        plt.imshow(detect_horizontal, cmap='gray')
+        plt.show()
+
+    # _______ Vertical line removal _______
+    v_kernel_len = max(20, img_height // 40)
+    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, v_kernel_len)) # Increase number parameter to find large sections of line
+    
+    blurred = cv2.GaussianBlur(thresh, (3, 3), 0)
+
+    detect_vertical = cv2.morphologyEx(blurred, cv2.MORPH_OPEN, vertical_kernel)
+    detect_vertical = cv2.dilate(detect_vertical, vertical_kernel, iterations=3)
+    line_removed[detect_vertical == 255] = 255
+
+
+
+    # Filter and remove only tall/narrow lines
+    contours, _ = cv2.findContours(detect_vertical, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        if h > 2.5 * w and h > 10:
+            cv2.drawContours(line_removed, [cnt], -1, 255, thickness=cv2.FILLED)
+
+
+
+
+    if debug:
+        plt.title("Vertical lines")
+        plt.imshow(detect_vertical, cmap='gray')
+        plt.show()
+
+    # Optional: median blur to clean up edges
+    cleaned = cv2.medianBlur(line_removed, 3)
+
+    return cleaned
+
+
+
+
 
 # Removes skew from image to improve OCR
 def deskew_image_hough(cleaned, canny_thresh1=50, canny_thresh2=150, hough_threshold=200, min_angle=1.0):
@@ -178,7 +232,7 @@ def preprocess_for_ocr(jpeg_image):
     # print(f"Detected skew angle: {detected_angle} degrees")
 
     # 6 Remove horizontal and vertical boxes/lines
-    cleaned = remove_form_lines(open_cv_image, debug=False)
+    lines_removed = remove_form_lines(open_cv_image, debug=False)
 
     # # Invert for easier contour detection
     # invert = cv2.bitwise_not(cleaned)
@@ -229,7 +283,7 @@ def preprocess_for_ocr(jpeg_image):
 
     # 9 Denoise
     # denoised = cv2.medianBlur(deskewed, 3) # faster processing option
-    denoised = cv2.fastNlMeansDenoising(cleaned, h=10, templateWindowSize=7, searchWindowSize=21)
+    denoised = cv2.fastNlMeansDenoising(lines_removed, h=10, templateWindowSize=7, searchWindowSize=21)
 
     # Convert back to PIL
     return Image.fromarray(denoised)
@@ -456,7 +510,11 @@ for filename in os.listdir(sla_applications_folder):
             fmt='png',          # Output format (e.g., 'png', 'jpeg')
         )
 
-        all_text = ''
+
+        # Empty string variable to hold OCR text for each PDF
+        ocr_text = ''
+
+        # Perform conversion, preprocessing, and OCR on each PDF image
         for i, image in enumerate(pdf_images):
             # Create folder for converted images and specify image names
             image_path = os.path.join(image_folder, f'{filename}_page_{i + 1}.png')
@@ -469,20 +527,39 @@ for filename in os.listdir(sla_applications_folder):
             preprocessed_image.save(image_path)
             print(f"Saved: {image_path}")
 
-            # Convert to text and combine text from all related images (pages of PDF)
+            # _________________________ OCR ______________________________ #
             '''
             Notes on config options for pytesseract
             - these can affect how the characters are interpreted
-            - https://stackoverflow.com/questions/44619077/pytesseract-ocr-multiple-config-options
+            - Page Segmentation Modes: https://stackoverflow.com/questions/44619077/pytesseract-ocr-multiple-config-options
+            
+            
+            1) --oem 3 = default OCR engine
+            2) --psm 6 = page segmentation mode 6 which assumes uniform block of text (BAD RESULTS)
+            3) -c tessedit_char_whitelist=[characters] = limits character recognition
+            4) lang='eng' = uses a language as model (issues with names)
+            5) -c preserve_interword_spaces=1 = interpret as is (1) or try to reduce spaceing (0)
+
             '''
-            all_text += pytesseract.image_to_string(preprocessed_image)
-            # all_text += pytesseract.image_to_string(preprocessed_image, config='--psm 6 -c tessedit_char_whitelist=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@.,:-() ')
-            # all_text += pytesseract.image_to_string(preprocessed_image, lang='eng') # most used
+            # ocr_text += pytesseract.image_to_string(preprocessed_image)
 
+            custom_config_1 = r''
+            custom_config_2 = r'--oem 3 -c tessedit_char_whitelist=abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,:;!?()[]{}<>@#%&+-=*/"\''
+            custom_config_3 = r'--oem 3 -c preserve_interword_spaces=1 -c tessedit_char_whitelist=abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,:;!?()[]{}<>@#%&+-=*/"\''
+            custom_config_4 = r'--oem 3 -c preserve_interword_spaces=1'
+            custom_config_5 = r'--oem 3 --psm 3'
 
+            # Convert to text and combine text from all related images (pages of PDF)
+            ocr_text += pytesseract.image_to_string(preprocessed_image, config=custom_config_5)
+            
+            # Remove any non-standard characters from text
+            clean_ocr_text = re.sub(r'[^A-Za-z0-9.,:;!?()\[\]{}@#%&+\-=*/"\'\s]', '', ocr_text)
+            # _____________________________________________________________ #
+
+        # Save OCR text to .txt files
         with open(text_output_path, 'w') as ocr_output:
-            all_text.encode('utf-8').strip()
-            ocr_output.write(all_text)
+            clean_ocr_text.encode('utf-8').strip()
+            ocr_output.write(clean_ocr_text)
 
         print(f"Saved OCR text to {text_output_path}")
 
@@ -493,7 +570,7 @@ for filename in os.listdir(sla_applications_folder):
         #     print(info)
 
         # Extract info from text using regex
-        info = extract_info(all_text, pdf_path)
+        info = extract_info(clean_ocr_text, pdf_path)
 
         # Add row to dataframe
         df = pd.concat([df, pd.DataFrame([info])], ignore_index=True)   # wrap dictionary in list
@@ -542,7 +619,7 @@ print(name_list)
 
 
 # Map temporary resolution dictionary to main dictionary using applicant name as key
-df['resolution_text'] = df['applicant_name'].map(reso_dict)
+# df['resolution_text'] = df['applicant_name'].map(reso_dict)
 
 # Create CSV from dataframe
 df.to_csv(os.path.join(parent_folder, "SLA_app_info.csv"), mode='w', index=True, header=True)
