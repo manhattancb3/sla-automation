@@ -26,7 +26,12 @@ NEEDED UPDATES?
     - resolutions should probably have a relatively standard character limit
 - Make "Applicant or Licensee Name" and "Trade Name" interchangeable when searching
     for resolution in vote sheet?
-- create "clean" names
+- create "clean" names?
+ 
+MOST IMPORTANT
+- refine regex for data extraction to account for more OCR discrepancies
+- debug addition of resolution text
+- extract ZIP codes
 
 '''
 
@@ -53,45 +58,6 @@ start_time = time.time()
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 # Removes horizontal and vertical lines to improve OCR
-def old_remove_form_lines(image, debug=False):
-
-    # Invert image to make lines white
-    invert = cv2.bitwise_not(image)
-    thresh = cv2.threshold(invert, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-
-    # Estimate kernel sizes based on image width/height
-    img_height, img_width = thresh.shape
-
-    # # Horizontal line removal
-    h_kernel_len = img_width // 30  # Adjust divisor based on form layout
-    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (h_kernel_len, 10))
-    detect_horizontal = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, horizontal_kernel, iterations=1)
-    contours = cv2.findContours(detect_horizontal, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
-    for c in contours:
-        cv2.drawContours(image, [c], -1, (255, 255, 255), thickness=cv2.FILLED)
-
-    if debug:
-        # cv2.imshow("Horizontal Lines", detect_horizontal)
-        # cv2.waitKey(0)
-        plt.imshow(detect_horizontal, cmap='gray')
-        plt.show()
-
-    # Vertical line removal
-    v_kernel_len = img_height // 60
-    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (10, v_kernel_len))
-    detect_vertical = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, vertical_kernel, iterations=1)
-    contours = cv2.findContours(detect_vertical, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
-    for c in contours:
-        cv2.drawContours(image, [c], -1, (255, 255, 255), thickness=cv2.FILLED)
-
-    if debug:
-        # cv2.imshow("Vertical Lines", detect_vertical)
-        # cv2.waitKey(0)
-        plt.imshow(detect_vertical, cmap='gray')
-        plt.show()
-
-    return image
-
 def remove_form_lines(image, debug=False):
     # Convert to grayscale if needed
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
@@ -102,29 +68,29 @@ def remove_form_lines(image, debug=False):
     img_height, img_width = thresh.shape
     line_removed = gray.copy()
 
-    # _______ Horizontal line removal _______
-    h_kernel_len = max(20, img_width // 40)
-    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (h_kernel_len, 1))
-    detect_horizontal = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, horizontal_kernel, iterations=1)
-    detect_horizontal = cv2.dilate(detect_horizontal, horizontal_kernel, iterations=2)
-    line_removed[detect_horizontal == 255] = 255
-
-    if debug:
-        plt.title("Horizontal lines")
-        plt.imshow(detect_horizontal, cmap='gray')
-        plt.show()
 
     # _______ Vertical line removal _______
-    v_kernel_len = max(20, img_height // 40)
-    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, v_kernel_len)) # Increase number parameter to find large sections of line
-    
+    '''
+    Notes:
+    - remove vertical lines first because they are more likely to interfere with OCR
+    - (v_length_adjust = 70, v_thickness_adjust = 10) = best combination so far
+    - No dilation creates better results; dilation "extends" lines to join multiple lines for removal
+    '''
+
+    # larger numbers will put focus on smaller/shorter lines
+    v_length_adjust = 70 # 50=eliminates some letters
+    # larger numbers will put focus on thicker/wider lines
+    v_thickness_adjust = 10 # 2=too little; 10=too much; 4=pretty good;
+
+    # 60=too good; 40=not effective; 50=perfect?
+    v_kernel_len = max(20, img_height // v_length_adjust)
+    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (v_thickness_adjust, v_kernel_len)) # Increase number parameter to find large sections of line
     blurred = cv2.GaussianBlur(thresh, (3, 3), 0)
-
     detect_vertical = cv2.morphologyEx(blurred, cv2.MORPH_OPEN, vertical_kernel)
-    detect_vertical = cv2.dilate(detect_vertical, vertical_kernel, iterations=3)
+
+    # controls whether a line is "extended" to capture larger lines
+    # detect_vertical = cv2.dilate(detect_vertical, vertical_kernel, iterations=3)
     line_removed[detect_vertical == 255] = 255
-
-
 
     # Filter and remove only tall/narrow lines
     contours, _ = cv2.findContours(detect_vertical, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -133,12 +99,32 @@ def remove_form_lines(image, debug=False):
         if h > 2.5 * w and h > 10:
             cv2.drawContours(line_removed, [cnt], -1, 255, thickness=cv2.FILLED)
 
-
-
-
+    # Debugging helper
     if debug:
         plt.title("Vertical lines")
         plt.imshow(detect_vertical, cmap='gray')
+        plt.show()
+
+
+    # _______ Horizontal line removal _______
+    '''
+    Notes:
+    - (h_length_adjust = 40, h_thickness_adjust = 5) = best combination so far
+    '''
+
+    h_length_adjust = 40
+    h_thickness_adjust = 5
+    h_kernel_len = max(20, img_width // h_length_adjust)
+
+    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (h_kernel_len, h_thickness_adjust))
+    detect_horizontal = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, horizontal_kernel, iterations=1)
+    detect_horizontal = cv2.dilate(detect_horizontal, horizontal_kernel, iterations=2)
+    line_removed[detect_horizontal == 255] = 255
+
+    # Debugging helper
+    if debug:
+        plt.title("Horizontal lines")
+        plt.imshow(detect_horizontal, cmap='gray')
         plt.show()
 
     # Optional: median blur to clean up edges
@@ -146,11 +132,7 @@ def remove_form_lines(image, debug=False):
 
     return cleaned
 
-
-
-
-
-# Removes skew from image to improve OCR
+# [UNUSED] Removes skew from image to improve OCR
 def deskew_image_hough(cleaned, canny_thresh1=50, canny_thresh2=150, hough_threshold=200, min_angle=1.0):
     """
     Deskews an image using Hough Line Transform to detect dominant angles.
@@ -238,48 +220,12 @@ def preprocess_for_ocr(jpeg_image):
     # invert = cv2.bitwise_not(cleaned)
     # thresh = cv2.threshold(invert, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
 
-    # # Remove horizontal lines
-    # horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (40, 1))
-    # detect_horizontal = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, horizontal_kernel, iterations=1)
-    # contours = cv2.findContours(detect_horizontal, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
-    # for c in contours:
-    #     cv2.drawContours(cleaned, [c], -1, (255, 255, 255), 2)
-
-    # # Remove vertical lines
-    # vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 40))
-    # detect_vertical = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, vertical_kernel, iterations=1)
-    # contours = cv2.findContours(detect_vertical, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
-    # for c in contours:
-    #     cv2.drawContours(cleaned, [c], -1, (255, 255, 255), 2)
-
-
     # 6 Thresholding (MAKES OCR WORSE!!!!!!!!)
     #thresh = cv2.adaptiveThreshold(open_cv_image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
 
     # 7 Morphological cleaning
     # kernel = np.ones((1, 1), np.uint8)
     # cleaned = cv2.morphologyEx(open_cv_image, cv2.MORPH_OPEN, kernel)
-
-    # 8 Deskew
-    # coords = np.column_stack(np.where(cleaned > 0))
-    # angle = cv2.minAreaRect(coords)[-1]
-    # print(angle)
-
-    # # Normalize angle
-    # if angle < -45:
-    #     angle = 90 + angle
-    # elif angle > 45:
-    #     angle = angle - 90
-
-    # # Ignore small angles (optional)
-    # if abs(angle) > .25:  # degrees
-    #     print("------------------descewed run-----------------")
-    #     (h, w) = cleaned.shape[:2]
-    #     center = (w // 2, h // 2)
-    #     M = cv2.getRotationMatrix2D(center, angle, 1.0)
-    #     deskewed = cv2.warpAffine(cleaned, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-    # else:
-    #     deskewed = cleaned  # No correction needed
 
     # 9 Denoise
     # denoised = cv2.medianBlur(deskewed, 3) # faster processing option
@@ -486,8 +432,6 @@ vote_sheet_path = r'C:\Users\MN03\Documents\Python Scripts\SLA Automation\Test S
 
 
 
-
-
 '''
 Perform OCR on each PDF, extract data from text, and store in dataframe
 '''
@@ -576,7 +520,6 @@ for filename in os.listdir(sla_applications_folder):
         df = pd.concat([df, pd.DataFrame([info])], ignore_index=True)   # wrap dictionary in list
 
 
-
 # Loads Microsoft Word .docx file
 doc = Document(vote_sheet_path)
 
@@ -601,8 +544,6 @@ for i in range(len(name_list)):
     
     # Save resolution text to dataframe
     reso_dict[search_name] = find_reso(doc, search_name, next_name)
-
-
 
 
 
